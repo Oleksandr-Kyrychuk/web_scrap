@@ -16,3 +16,14 @@ A Python script to scrape job listings from work.ua based on user-specified vaca
 ## Usage
 ```bash
 python main2.py
+
+Output
+
+    workua_jobs.csv: Job listings in CSV format.
+    workua_scraper.log: Execution log.
+    page_X.html: Debug HTML files (optional).
+
+Notes
+
+    Randomized delays prevent server blocking.
+    Complex city parsing due to inconsistent site structure.
