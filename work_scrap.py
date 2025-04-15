@@ -6,6 +6,8 @@ import re
 import time
 import unicodedata
 import random
+import os
+import gzip
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.firefox.service import Service
@@ -17,9 +19,20 @@ from selenium.webdriver.support import expected_conditions as EC
 # Налаштування логування
 logging.basicConfig(filename="workua_scraper.log", level=logging.INFO)
 
+# Конфігурація дебагінгу
+DEBUG_MODE = False  # Увімкнути для збереження всіх HTML-файлів
 
-# Функція для створення універсального регулярного виразу
+
 def create_vacancy_pattern(search_vacancy):
+    """
+    Створює регулярний вираз для пошуку вакансій за введеним запитом.
+
+    Args:
+        search_vacancy (str): Назва вакансії для пошуку (наприклад, "Водій").
+
+    Returns:
+        str: Регулярний вираз для відповідності назви вакансії.
+    """
     vacancy_base = search_vacancy.lower().strip()
     vacancy_base = re.escape(vacancy_base)
     vacancy_base = unicodedata.normalize("NFKD", vacancy_base).replace("і", "i").replace("ї", "i")
@@ -27,9 +40,28 @@ def create_vacancy_pattern(search_vacancy):
     return vacancy_pattern
 
 
+def convert_iso_to_text(iso_date):
+    """
+    Перетворює дату у форматі ISO (YYYY-MM-DD HH:MM:SS) у текстовий формат (DD місяць YYYY).
+
+    Args:
+        iso_date (str): Дата у форматі ISO (наприклад, "2025-04-15 12:00:00").
+
+    Returns:
+        str: Дата у текстовому форматі (наприклад, "15 квітня 2025") або оригінальна дата, якщо формат неправильний.
+    """
+    try:
+        date_obj = datetime.strptime(iso_date, "%Y-%m-%d %H:%M:%S")
+        months = ["січня", "лютого", "березня", "квітня", "травня", "червня",
+                  "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
+        return f"{date_obj.day} {months[date_obj.month - 1]} {date_obj.year}"
+    except ValueError:
+        return iso_date
+
+
 # Налаштування Selenium для Firefox
 firefox_options = Options()
-# firefox_options.add_argument("--headless")  # Вимкнемо безголовий режим для тестування
+# firefox_options.add_argument("--headless")  # Вимкнено для тестування
 firefox_options.add_argument("--no-sandbox")
 firefox_options.add_argument("--disable-dev-shm-usage")
 
@@ -54,7 +86,7 @@ if not search_vacancy or not search_city:
 # Формуємо базовий URL
 search_query = "-".join(search_vacancy.split())
 search_city_query = "-".join(search_city.split())
-base_url = f"https://www.work.ua/jobs-{search_city_query}-{search_query}/"  # Змінено порядок: місто, потім вакансія
+base_url = f"https://www.work.ua/jobs-{search_city_query}-{search_query}/"
 
 # Визначаємо кількість сторінок
 if page_input == "всі":
@@ -99,18 +131,6 @@ logging.info(f"Початок парсингу: вакансія={search_vacancy
 
 jobs = []
 
-
-# Функція для конвертації ISO-формату в текстовий
-def convert_iso_to_text(iso_date):
-    try:
-        date_obj = datetime.strptime(iso_date, "%Y-%m-%d %H:%M:%S")
-        months = ["січня", "лютого", "березня", "квітня", "травня", "червня",
-                  "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
-        return f"{date_obj.day} {months[date_obj.month - 1]} {date_obj.year}"
-    except ValueError:
-        return iso_date
-
-
 page = 1
 while page <= max_pages:
     if page == 1:
@@ -118,7 +138,6 @@ while page <= max_pages:
     else:
         # Імітуємо клік по кнопці "Наступна"
         try:
-            # Уточнений селектор для кнопки "Наступна"
             next_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, "//a[contains(@class, 'link-icon') and .//span[text()='Наступна']]"))
@@ -126,12 +145,15 @@ while page <= max_pages:
             driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
             current_url = driver.current_url
             next_button.click()
-            # Чекаємо, поки URL зміниться
             WebDriverWait(driver, 10).until(
                 lambda d: d.current_url != current_url
             )
         except Exception as e:
             logging.error(f"Не вдалося перейти на сторінку {page}: {str(e)}")
+            # Зберігаємо HTML для аналізу помилки
+            with gzip.open(f"page_{page}_error.html.gz", "wt", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            logging.info(f"HTML сторінки {page} збережено через помилку в page_{page}_error.html.gz")
             break
 
     # Явне очікування контейнера PJAX
@@ -141,6 +163,10 @@ while page <= max_pages:
         )
     except Exception as e:
         logging.warning(f"Контейнер PJAX на сторінці {page} не знайдений: {str(e)}")
+        # Зберігаємо HTML для аналізу помилки
+        with gzip.open(f"page_{page}_error.html.gz", "wt", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        logging.info(f"HTML сторінки {page} збережено через помилку в page_{page}_error.html.gz")
 
     # Явне очікування вакансій
     try:
@@ -149,29 +175,41 @@ while page <= max_pages:
         )
     except Exception as e:
         logging.warning(f"Вакансії на сторінці {page} не знайдені: {str(e)}")
+        # Зберігаємо HTML для аналізу помилки
+        with gzip.open(f"page_{page}_error.html.gz", "wt", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        logging.info(f"HTML сторінки {page} збережено через помилку в page_{page}_error.html.gz")
         break
 
     # Імітуємо прокручування сторінки
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(random.uniform(1, 3))  # Рандомізована затримка
+    time.sleep(random.uniform(1, 3))
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
-
-    # Дебагінг: зберігаємо HTML сторінки
-    with open(f"page_{page}.html", "w", encoding="utf-8") as f:
-        f.write(soup.prettify())
-    logging.info(f"HTML сторінки {page} збережено в page_{page}.html")
-
     job_listing = soup.find_all("div", class_="job-link")
     if not job_listing:
         print(f"❌ Вакансій на сторінці {page} не знайдено, зупиняємось.")
         logging.info(f"Вакансій на сторінці {page} не знайдено")
+        # Зберігаємо HTML для аналізу помилки
+        with gzip.open(f"page_{page}_error.html.gz", "wt", encoding="utf-8") as f:
+            f.write(soup.prettify())
+        logging.info(f"HTML сторінки {page} збережено через помилку в page_{page}_error.html.gz")
         no_results = soup.find(string=re.compile("Немає результатів|Вакансії не знайдені"))
         if no_results:
             logging.info(f"Сторінка {page} містить повідомлення: {no_results}")
         break
     else:
         logging.info(f"Знайдено {len(job_listing)} вакансій на сторінці {page}")
+        if DEBUG_MODE:
+            # Зберігаємо HTML лише за умови DEBUG_MODE
+            with gzip.open(f"page_{page}.html.gz", "wt", encoding="utf-8") as f:
+                f.write(soup.prettify())
+            logging.info(f"HTML сторінки {page} збережено в page_{page}.html.gz")
+            # Видаляємо старі файли (старше 5 сторінок)
+            old_page = page - 5
+            if old_page > 0 and os.path.exists(f"page_{old_page}.html.gz"):
+                os.remove(f"page_{old_page}.html.gz")
+                logging.info(f"Видалено старий файл page_{old_page}.html.gz")
 
     for job in job_listing:
         try:
@@ -197,16 +235,20 @@ while page <= max_pages:
             else:
                 logging.warning(f"Зарплата не знайдена для вакансії {title}")
 
+            # Спроба знайти місто кількома методами через непередбачувану структуру сайту
+            # Метод 1: Пошук <span> без класу, який може містити місто
             city = "Не вказано"
             city_span = job.find("span", class_="")
             if city_span:
                 city = city_span.text.strip().rstrip(",").strip()
                 logging.info(f"Знайдено місто (метод 1): {city}")
+            # Метод 2: Пошук <span> із класом "location"
             if city == "Не вказано":
                 city_tag_alt = job.find("span", class_="location")
                 if city_tag_alt:
                     city = city_tag_alt.text.strip()
                     logging.info(f"Знайдено місто (метод 2): {city}")
+            # Метод 3: Аналіз <div class="mt-xs"> для пошуку тексту, схожого на місто
             if city == "Не вказано":
                 city_block = job.find("div", class_="mt-xs")
                 if city_block:
@@ -223,6 +265,17 @@ while page <= max_pages:
                                 city = city_text.split(",")[0].strip()
                                 logging.info(f"Знайдено місто (метод 3): {city}")
                                 break
+            # Метод 4: Використовуємо CSS-селектор для резервного пошуку міста
+            if city == "Не вказано":
+                try:
+                    city_span_new = job.select_one("div.mt-xs span:nth-child(3)")
+                    if city_span_new:
+                        city_text = city_span_new.text.strip().rstrip(",").strip()
+                        if re.match(r"^[А-ЯІЇЄҐ][а-яіїєґ\s,-]+$", city_text):
+                            city = city_text.split(",")[0].strip()
+                            logging.info(f"Знайдено місто (метод 4): {city}")
+                except Exception as e:
+                    logging.warning(f"Метод 4 не спрацював для вакансії {title}: {str(e)}")
             if city == "Не вказано":
                 logging.warning(f"Місто не знайдено для вакансії {title}. HTML блоку: {job.prettify()}")
 
@@ -270,14 +323,22 @@ while page <= max_pages:
     print(f"✅ Сторінка {page} оброблена!")
     logging.info(f"Сторінка {page} оброблена")
     page += 1
-    time.sleep(random.uniform(1, 3))  # Рандомізована затримка між сторінками
+    time.sleep(random.uniform(1, 3))
 
 # Закриваємо браузер
 driver.quit()
 
 
-# Сортування за зарплатою
 def parse_salary(salary):
+    """
+    Перетворює текстове значення зарплати у числове для сортування.
+
+    Args:
+        salary (str): Зарплата у текстовому форматі (наприклад, "20000", "30000–40000" або "Не вказано").
+
+    Returns:
+        float: Середнє значення зарплати для сортування (або 0, якщо зарплата не вказана).
+    """
     if salary == "Не вказано":
         return 0
     try:
